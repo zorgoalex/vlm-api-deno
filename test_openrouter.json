@@ -1,0 +1,7 @@
+{
+  "provider": "openrouter",
+  "model": "qwen/qwen-2-vl-72b-instruct",
+  "prompt": "What do you see in this image?",
+  "image_url": "https://upload.wikimedia.org/wikipedia/commons/thumb/d/dd/Gfp-wisconsin-madison-the-nature-boardwalk.jpg/2560px-Gfp-wisconsin-madison-the-nature-boardwalk.jpg",
+  "stream": false
+}

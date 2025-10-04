@@ -1,0 +1,22 @@
+# AI
+ai_docs_backend/
+
+# Deno
+.deno/
+
+# Environment variables
+.env
+.env.local
+
+# Editor
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Logs
+*.log

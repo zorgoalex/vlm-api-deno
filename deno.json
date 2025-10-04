@@ -1,0 +1,29 @@
+{
+  "tasks": {
+    "dev": "deno run --allow-net --allow-env --allow-read --env --watch main.ts",
+    "start": "deno run --allow-net --allow-env --allow-read --env main.ts",
+    "deploy": "deployctl deploy --project=vlm-proxy main.ts",
+    "deploy:prod": "deployctl deploy --project=vlm-proxy --prod main.ts",
+    "test": "deno test --allow-net --allow-env"
+  },
+  "fmt": {
+    "lineWidth": 100,
+    "indentWidth": 2,
+    "semiColons": true
+  },
+  "lint": {
+    "rules": {
+      "tags": [
+        "recommended"
+      ]
+    }
+  },
+  "deploy": {
+    "project": "5463a986-f36e-4e0a-aeeb-8d0aad18fdd1",
+    "exclude": [
+      "**/node_modules"
+    ],
+    "include": [],
+    "entrypoint": "main.ts"
+  }
+}
