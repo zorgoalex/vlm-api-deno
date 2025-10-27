@@ -1,9 +1,9 @@
 {
   "tasks": {
-    "dev": "deno run --allow-net --allow-env --allow-read --env --watch main.ts",
-    "start": "deno run --allow-net --allow-env --allow-read --env main.ts",
-    "deploy": "deployctl deploy --project=vlm-proxy main.ts",
-    "deploy:prod": "deployctl deploy --project=vlm-proxy --prod main.ts",
+    "dev": "deno run --allow-net --allow-env --allow-read --unstable-kv --env --watch main.ts",
+    "start": "deno run --allow-net --allow-env --allow-read --unstable-kv --env main.ts",
+    "deploy": "deployctl deploy",
+    "deploy:prod": "deployctl deploy --prod",
     "test": "deno test --allow-net --allow-env"
   },
   "fmt": {

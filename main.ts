@@ -1,16 +1,35 @@
 /**
  * VLM API on Deno Deploy
  * Edge proxy for Vision Language Models (BigModel + OpenRouter)
+ * Includes Prompts management via Deno KV.
  */
 
+// --- Utils ---
 import { corsResponse } from "./lib/utils/cors.ts";
 import { errorResponse, jsonResponse, generateRequestId } from "./lib/utils/errors.ts";
 import { logRequest, logError } from "./lib/utils/logging.ts";
+import { passthroughSSE } from "./lib/streaming/sse.ts";
+
+// --- Vision API ---
 import { parseVisionRequest, buildVisionPayload } from "./lib/providers/payload.ts";
 import { callBigModel } from "./lib/providers/bigmodel.ts";
 import { callOpenRouter } from "./lib/providers/openrouter.ts";
-import { passthroughSSE } from "./lib/streaming/sse.ts";
 
+// --- Prompts API ---
+import { createPrompt, getPrompt, updatePrompt } from "./lib/storage/prompts.ts";
+import type { PromptCreate, PromptUpdate } from "./lib/storage/types.ts";
+
+// --- Router Patterns ---
+const VISION_ANALYZE_PATTERN = new URLPattern({ pathname: "/v1/vision/analyze" });
+const VISION_STREAM_PATTERN = new URLPattern({ pathname: "/v1/vision/stream" });
+const PROMPT_CREATE_PATTERN = new URLPattern({ pathname: "/v1/prompts" });
+const PROMPT_GET_PATTERN = new URLPattern({ pathname: "/v1/prompts/:id" });
+const PROMPT_UPDATE_PATTERN = new URLPattern({ pathname: "/v1/prompts/:id" });
+const HEALTHZ_PATTERN = new URLPattern({ pathname: "/healthz" });
+
+/**
+ * Main request handler.
+ */
 async function handler(req: Request): Promise<Response> {
   const url = new URL(req.url);
   const startTime = Date.now();
@@ -22,39 +41,46 @@ async function handler(req: Request): Promise<Response> {
       return corsResponse(req);
     }
 
-    // GET /healthz
-    if (url.pathname === "/healthz" && req.method === "GET") {
+    const visionAnalyzeMatch = VISION_ANALYZE_PATTERN.exec(url);
+    if (visionAnalyzeMatch && req.method === "POST") {
+      return await handleVisionAnalyze(req, requestId, startTime, false);
+    }
+
+    const visionStreamMatch = VISION_STREAM_PATTERN.exec(url);
+    if (visionStreamMatch && req.method === "POST") {
+      return await handleVisionAnalyze(req, requestId, startTime, true);
+    }
+
+    const healthzMatch = HEALTHZ_PATTERN.exec(url);
+    if (healthzMatch && req.method === "GET") {
       const response = jsonResponse(req, { ok: true, ts: Date.now() });
       logRequest(req, 200, Date.now() - startTime, { request_id: requestId });
       return response;
     }
 
-    // POST /v1/vision/analyze (JSON response)
-    if (url.pathname === "/v1/vision/analyze" && req.method === "POST") {
-      return await handleVisionAnalyze(req, requestId, startTime, false);
+    const promptCreateMatch = PROMPT_CREATE_PATTERN.exec(url);
+    if (promptCreateMatch && req.method === "POST") {
+      return await handleCreatePrompt(req, requestId);
     }
 
-    // POST /v1/vision/stream (SSE response)
-    if (url.pathname === "/v1/vision/stream" && req.method === "POST") {
-      return await handleVisionAnalyze(req, requestId, startTime, true);
+    const promptGetMatch = PROMPT_GET_PATTERN.exec(url);
+    if (promptGetMatch && req.method === "GET") {
+      const id = promptGetMatch.pathname.groups.id!;
+      return await handleGetPrompt(req, id, requestId);
+    }
+
+    const promptUpdateMatch = PROMPT_UPDATE_PATTERN.exec(url);
+    if (promptUpdateMatch && req.method === "PUT") {
+      const id = promptUpdateMatch.pathname.groups.id!;
+      return await handleUpdatePrompt(req, id, requestId);
     }
 
     // 404 Not Found
     logRequest(req, 404, Date.now() - startTime, { request_id: requestId });
-    return errorResponse(req, {
-      code: "NOT_FOUND",
-      message: "Not Found",
-      status: 404,
-      requestId,
-    });
-  } catch (error) {
-    logError({
-      request_id: requestId,
-      route: url.pathname,
-      method: req.method,
-      error: String(error),
-    });
+    return errorResponse(req, { code: "NOT_FOUND", message: "Not Found", status: 404, requestId });
 
+  } catch (error) {
+    logError({ request_id: requestId, route: url.pathname, method: req.method, error: String(error) });
     return errorResponse(req, {
       code: "INTERNAL_ERROR",
       message: error instanceof Error ? error.message : "Internal Server Error",
@@ -64,6 +90,86 @@ async function handler(req: Request): Promise<Response> {
   }
 }
 
+/**
+ * Checks for the admin token on a request.
+ */
+function checkAdminToken(req: Request): Response | null {
+    const adminToken = Deno.env.get("ADMIN_TOKEN");
+    if (!adminToken) {
+        // If token is not configured, deny all admin actions.
+        return errorResponse(req, { code: "CONFIG_ERROR", message: "Admin token not configured", status: 500 });
+    }
+    if (req.headers.get("X-Admin-Token") !== adminToken) {
+        return errorResponse(req, { code: "UNAUTHORIZED", message: "Invalid or missing admin token", status: 401 });
+    }
+    return null; // Token is valid
+}
+
+
+// --- Route Handlers ---
+
+async function handleCreatePrompt(req: Request, requestId: string): Promise<Response> {
+    const authError = checkAdminToken(req);
+    if (authError) return authError;
+
+    try {
+        const data = await req.json() as PromptCreate;
+        // Basic validation can be added here later
+        const newPrompt = await createPrompt(data);
+        return jsonResponse(req, newPrompt, 201);
+    } catch (error) {
+        logError({ request_id: requestId, route: "/v1/prompts", error: String(error) });
+        return errorResponse(req, {
+            code: "PROMPT_CREATE_FAILED",
+            message: error instanceof Error ? error.message : "Failed to create prompt",
+            status: 400, // 400 for bad data, 500 for server error
+            requestId,
+        });
+    }
+}
+
+async function handleGetPrompt(req: Request, id: string, requestId: string): Promise<Response> {
+    try {
+        const prompt = await getPrompt(id);
+        if (!prompt) {
+            return errorResponse(req, { code: "NOT_FOUND", message: `Prompt with id '${id}' not found`, status: 404, requestId });
+        }
+        return jsonResponse(req, prompt);
+    } catch (error) {
+        logError({ request_id: requestId, route: `/v1/prompts/${id}`, error: String(error) });
+        return errorResponse(req, {
+            code: "PROMPT_GET_FAILED",
+            message: error instanceof Error ? error.message : "Failed to retrieve prompt",
+            status: 500,
+            requestId,
+        });
+    }
+}
+
+async function handleUpdatePrompt(req: Request, id: string, requestId: string): Promise<Response> {
+    const authError = checkAdminToken(req);
+    if (authError) return authError;
+
+    try {
+        const data = await req.json() as PromptUpdate;
+        const updatedPrompt = await updatePrompt(id, data);
+
+        if (!updatedPrompt) {
+            return errorResponse(req, { code: "NOT_FOUND", message: `Prompt with id '${id}' not found`, status: 404, requestId });
+        }
+
+        return jsonResponse(req, updatedPrompt);
+    } catch (error) {
+        logError({ request_id: requestId, route: `/v1/prompts/${id}`, error: String(error) });
+        return errorResponse(req, {
+            code: "PROMPT_UPDATE_FAILED",
+            message: error instanceof Error ? error.message : "Failed to update prompt",
+            status: 400, // Or 500 depending on error
+            requestId,
+        });
+    }
+}
+
 async function handleVisionAnalyze(
   req: Request,
   requestId: string,
@@ -71,14 +177,10 @@ async function handleVisionAnalyze(
   forceStream = false
 ): Promise<Response> {
   try {
-    // Parse input
     const input = await parseVisionRequest(req);
     const shouldStream = forceStream || input.stream === true;
-
-    // Build payload
     const { payload, provider } = buildVisionPayload(input);
 
-    // Call provider
     let upstreamResponse: Response;
     if (provider === "bigmodel") {
       upstreamResponse = await callBigModel(payload, shouldStream);
@@ -86,33 +188,18 @@ async function handleVisionAnalyze(
       upstreamResponse = await callOpenRouter(payload, shouldStream);
     }
 
-    // Handle streaming
     if (shouldStream) {
       const response = passthroughSSE(req, upstreamResponse);
-      logRequest(req, 200, Date.now() - startTime, {
-        request_id: requestId,
-        provider,
-        stream: true,
-      });
+      logRequest(req, 200, Date.now() - startTime, { request_id: requestId, provider, stream: true });
       return response;
     }
 
-    // Handle JSON
     const jsonData = await upstreamResponse.json();
     const response = jsonResponse(req, jsonData);
-    logRequest(req, 200, Date.now() - startTime, {
-      request_id: requestId,
-      provider,
-      stream: false,
-    });
+    logRequest(req, 200, Date.now() - startTime, { request_id: requestId, provider, stream: false });
     return response;
   } catch (error) {
-    logError({
-      request_id: requestId,
-      route: "/v1/vision/*",
-      error: String(error),
-    });
-
+    logError({ request_id: requestId, route: "/v1/vision/*", error: String(error) });
     return errorResponse(req, {
       code: "VISION_ERROR",
       message: error instanceof Error ? error.message : "Vision API error",
