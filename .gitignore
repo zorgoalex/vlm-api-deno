@@ -1,5 +1,8 @@
 # AI
 ai_docs_backend/
+ai_docs/
+.claude/
+.gemini/
 
 # Deno
 .deno/
