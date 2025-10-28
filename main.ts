@@ -16,15 +16,17 @@ import { callBigModel } from "./lib/providers/bigmodel.ts";
 import { callOpenRouter } from "./lib/providers/openrouter.ts";
 
 // --- Prompts API ---
-import { createPrompt, getPrompt, updatePrompt } from "./lib/storage/prompts.ts";
-import type { PromptCreate, PromptUpdate } from "./lib/storage/types.ts";
+import { createPrompt, getPrompt, updatePrompt, deletePrompt, listPrompts } from "./lib/storage/prompts.ts";
+import type { PromptCreate, PromptUpdate, PromptListFilters } from "./lib/storage/types.ts";
 
 // --- Router Patterns ---
 const VISION_ANALYZE_PATTERN = new URLPattern({ pathname: "/v1/vision/analyze" });
 const VISION_STREAM_PATTERN = new URLPattern({ pathname: "/v1/vision/stream" });
 const PROMPT_CREATE_PATTERN = new URLPattern({ pathname: "/v1/prompts" });
+const PROMPT_LIST_PATTERN = new URLPattern({ pathname: "/v1/prompts" });
 const PROMPT_GET_PATTERN = new URLPattern({ pathname: "/v1/prompts/:id" });
 const PROMPT_UPDATE_PATTERN = new URLPattern({ pathname: "/v1/prompts/:id" });
+const PROMPT_DELETE_PATTERN = new URLPattern({ pathname: "/v1/prompts/:id" });
 const HEALTHZ_PATTERN = new URLPattern({ pathname: "/healthz" });
 
 /**
@@ -63,6 +65,11 @@ async function handler(req: Request): Promise<Response> {
       return await handleCreatePrompt(req, requestId);
     }
 
+    const promptListMatch = PROMPT_LIST_PATTERN.exec(url);
+    if (promptListMatch && req.method === "GET") {
+      return await handleListPrompts(req, requestId);
+    }
+
     const promptGetMatch = PROMPT_GET_PATTERN.exec(url);
     if (promptGetMatch && req.method === "GET") {
       const id = promptGetMatch.pathname.groups.id!;
@@ -73,6 +80,12 @@ async function handler(req: Request): Promise<Response> {
     if (promptUpdateMatch && req.method === "PUT") {
       const id = promptUpdateMatch.pathname.groups.id!;
       return await handleUpdatePrompt(req, id, requestId);
+    }
+
+    const promptDeleteMatch = PROMPT_DELETE_PATTERN.exec(url);
+    if (promptDeleteMatch && req.method === "DELETE") {
+      const id = promptDeleteMatch.pathname.groups.id!;
+      return await handleDeletePrompt(req, id, requestId);
     }
 
     // 404 Not Found
@@ -128,6 +141,35 @@ async function handleCreatePrompt(req: Request, requestId: string): Promise<Resp
     }
 }
 
+async function handleListPrompts(req: Request, requestId: string): Promise<Response> {
+    try {
+        const url = new URL(req.url);
+        const params = url.searchParams;
+
+        const filters: PromptListFilters = {
+            namespace: params.get("namespace") || undefined,
+            name: params.get("name") || undefined,
+            isActive: params.get("isActive") !== null ? params.get("isActive") === "true" : undefined,
+            tag: params.get("tag") || undefined,
+            limit: params.get("limit") ? Math.max(1, Math.min(200, Number(params.get("limit")))) : undefined,
+            cursor: params.get("cursor") || undefined,
+            sortBy: (params.get("sortBy") as any) || undefined,
+            sortOrder: (params.get("sortOrder") as any) || undefined,
+        };
+
+        const result = await listPrompts(filters);
+        return jsonResponse(req, result);
+    } catch (error) {
+        logError({ request_id: requestId, route: "/v1/prompts", error: String(error) });
+        return errorResponse(req, {
+            code: "PROMPT_LIST_FAILED",
+            message: error instanceof Error ? error.message : "Failed to list prompts",
+            status: 500,
+            requestId,
+        });
+    }
+}
+
 async function handleGetPrompt(req: Request, id: string, requestId: string): Promise<Response> {
     try {
         const prompt = await getPrompt(id);
@@ -165,6 +207,30 @@ async function handleUpdatePrompt(req: Request, id: string, requestId: string): 
             code: "PROMPT_UPDATE_FAILED",
             message: error instanceof Error ? error.message : "Failed to update prompt",
             status: 400, // Or 500 depending on error
+            requestId,
+        });
+    }
+}
+
+async function handleDeletePrompt(req: Request, id: string, requestId: string): Promise<Response> {
+    const authError = checkAdminToken(req);
+    if (authError) return authError;
+
+    try {
+        const success = await deletePrompt(id);
+
+        if (!success) {
+            return errorResponse(req, { code: "NOT_FOUND", message: `Prompt with id '${id}' not found`, status: 404, requestId });
+        }
+
+        // Return 204 No Content on successful deletion
+        return new Response(null, { status: 204 });
+    } catch (error) {
+        logError({ request_id: requestId, route: `/v1/prompts/${id}`, error: String(error) });
+        return errorResponse(req, {
+            code: "PROMPT_DELETE_FAILED",
+            message: error instanceof Error ? error.message : "Failed to delete prompt",
+            status: 500,
             requestId,
         });
     }

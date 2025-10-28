@@ -1,4 +1,4 @@
-import { Prompt, PromptCreate, PromptUpdate } from "./types.ts";
+import { Prompt, PromptCreate, PromptUpdate, PromptListFilters, PromptListResult } from "./types.ts";
 import { ulid } from "jsr:@std/ulid";
 
 // We will open the KV store once and can reuse the instance.
@@ -110,4 +110,107 @@ export async function updatePrompt(id: string, data: PromptUpdate): Promise<Prom
   }
 
   return updatedPrompt;
+}
+
+/**
+ * Deletes a prompt by its unique ID.
+ * This operation is atomic and will also remove associated secondary indexes.
+ *
+ * @param id - The unique ID of the prompt to delete.
+ * @returns {Promise<boolean>} True if the prompt was found and deleted, false otherwise.
+ */
+export async function deletePrompt(id: string): Promise<boolean> {
+  const promptKey = ["prompts", id];
+
+  // We need to read the prompt first to get details for deleting the secondary index
+  const prompt = await getPrompt(id);
+  if (!prompt) {
+    return false; // Prompt not found
+  }
+
+  const byNameKey = ["prompts_by_name", prompt.namespace, prompt.name, prompt.version];
+
+  const res = await kv.atomic()
+    .delete(promptKey)
+    .delete(byNameKey)
+    .commit();
+
+  return res.ok;
+}
+
+/**
+ * Lists prompts with optional filtering, sorting and pagination.
+ * Uses secondary index by namespace when possible, otherwise scans main prefix.
+ */
+export async function listPrompts(filters: PromptListFilters = {}): Promise<PromptListResult> {
+  const {
+    namespace,
+    name,
+    isActive,
+    tag,
+    limit = 50,
+    cursor,
+    sortBy = "updatedAt",
+    sortOrder = "desc",
+  } = filters;
+
+  const items: Prompt[] = [];
+
+  // Helper to push if matches remaining filters
+  const matches = (p: Prompt) => {
+    if (name && p.name !== name) return false;
+    if (typeof isActive === "boolean" && p.isActive !== isActive) return false;
+    if (tag && (!p.tags || !p.tags.includes(tag))) return false;
+    return true;
+  };
+
+  let nextCursor: string | undefined = undefined;
+
+  // Prefer index by namespace when provided (fast path)
+  if (namespace && !name) {
+    const iter = kv.list<string>({ prefix: ["prompts_by_name", namespace] }, { limit, cursor });
+    for await (const entry of iter) {
+      const promptId = entry.value;
+      const p = await getPrompt(promptId);
+      if (p && matches(p)) {
+        items.push(p);
+      }
+      if (items.length >= limit) break;
+    }
+    // @ts-ignore cursor is available on iterator in Deno KV
+    nextCursor = (iter as any).cursor as string | undefined;
+  } else {
+    // Fallback: scan main prefix
+    const iter = kv.list<Prompt>({ prefix: ["prompts"] }, { limit: limit * 2, cursor });
+    for await (const entry of iter) {
+      const p = entry.value;
+      if (!p) continue;
+      if (namespace && p.namespace !== namespace) continue;
+      if (!matches(p)) continue;
+      items.push(p);
+      if (items.length >= limit) break;
+    }
+    // @ts-ignore cursor is available on iterator in Deno KV
+    nextCursor = (iter as any).cursor as string | undefined;
+  }
+
+  // Sorting in-memory according to requested criteria
+  const dir = sortOrder === "asc" ? 1 : -1;
+  items.sort((a, b) => {
+    let av: number | string = 0;
+    let bv: number | string = 0;
+    if (sortBy === "priority") {
+      av = a.priority; bv = b.priority;
+    } else if (sortBy === "createdAt") {
+      av = a.createdAt; bv = b.createdAt;
+    } else {
+      av = a.updatedAt; bv = b.updatedAt;
+    }
+    // ISO dates compare lexicographically
+    if (av < bv) return -1 * dir;
+    if (av > bv) return 1 * dir;
+    return 0;
+  });
+
+  return { items, cursor: nextCursor };
 }

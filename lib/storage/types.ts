@@ -31,3 +31,22 @@ export type PromptCreate = Omit<Prompt, "id" | "createdAt" | "updatedAt">;
  * All fields are optional.
  */
 export type PromptUpdate = Partial<Omit<Prompt, "id" | "createdAt" | "updatedAt">>;
+
+/**
+ * List filters and options for Prompts queries.
+ */
+export interface PromptListFilters {
+  namespace?: string;
+  name?: string;
+  isActive?: boolean;
+  tag?: string;
+  limit?: number;
+  cursor?: string;
+  sortBy?: "priority" | "createdAt" | "updatedAt";
+  sortOrder?: "asc" | "desc";
+}
+
+export interface PromptListResult {
+  items: Prompt[];
+  cursor?: string; // opaque cursor for next page
+}
