@@ -40,6 +40,11 @@ export async function createPrompt(data: PromptCreate): Promise<Prompt> {
     throw new Error("Failed to create prompt: A prompt with the same name, namespace, and version may already exist.");
   }
 
+  // Auto-sync default mapping if created as default
+  if (newPrompt.isDefault === true) {
+    await syncDefaultMapping(newPrompt.namespace, id);
+  }
+
   return newPrompt;
 }
 
@@ -63,7 +68,11 @@ export async function getPrompt(id: string): Promise<Prompt | null> {
  * @returns The fully updated prompt object, or null if the prompt was not found.
  * @throws Will throw an error if the update fails (e.g., due to a conflicting change).
  */
-export async function updatePrompt(id: string, data: PromptUpdate): Promise<Prompt | null> {
+export async function updatePrompt(
+  id: string,
+  data: PromptUpdate,
+  opts?: { skipDefaultSync?: boolean }
+): Promise<Prompt | null> {
   const promptKey = ["prompts", id];
 
   // Start a transaction to read the existing prompt
@@ -107,6 +116,11 @@ export async function updatePrompt(id: string, data: PromptUpdate): Promise<Prom
 
   if (!res.ok) {
     throw new Error("Failed to update prompt: The prompt was modified by another process.");
+  }
+
+  // After successful update, optionally sync default mapping
+  if (data.isDefault === true && !opts?.skipDefaultSync) {
+    await syncDefaultMapping(updatedPrompt.namespace, id);
   }
 
   return updatedPrompt;
@@ -213,4 +227,138 @@ export async function listPrompts(filters: PromptListFilters = {}): Promise<Prom
   });
 
   return { items, cursor: nextCursor };
+}
+
+/**
+ * Gets the default prompt for a namespace (if provided) or globally (first found).
+ */
+export async function getDefaultPrompt(namespace?: string): Promise<Prompt | null> {
+  if (namespace) {
+    const mappingKey = ["prompts_default", namespace];
+    const mapping = await kv.get<string>(mappingKey);
+    if (mapping.value) {
+      const p = await getPrompt(mapping.value);
+      if (p) return p;
+    }
+    return null;
+  }
+
+  // Fallback: scan for any isDefault=true
+  const iter = kv.list<Prompt>({ prefix: ["prompts"] }, { limit: 200 });
+  for await (const entry of iter) {
+    const p = entry.value;
+    if (p?.isDefault) return p;
+  }
+  return null;
+}
+
+/**
+ * Sets the default prompt for a namespace. If namespace is not provided, uses prompt.namespace.
+ * Ensures previous default (if any) is unset.
+ */
+export async function setDefaultPrompt(id: string, namespace?: string): Promise<Prompt | null> {
+  const current = await getPrompt(id);
+  if (!current) return null;
+
+  const ns = namespace || current.namespace;
+  const mappingKey = ["prompts_default", ns];
+
+  // Find previous default
+  const mapping = await kv.get<string>(mappingKey);
+  const prevId = mapping.value;
+
+  // If previous is different, unset it
+  if (prevId && prevId !== id) {
+    const prev = await getPrompt(prevId);
+    if (prev && prev.isDefault) {
+      await updatePrompt(prevId, { isDefault: false }, { skipDefaultSync: true });
+    }
+  }
+
+  // Set current as default and update mapping
+  await updatePrompt(id, { isDefault: true }, { skipDefaultSync: true });
+  await kv.set(mappingKey, id);
+
+  return await getPrompt(id);
+}
+
+/**
+ * Ensures mapping prompts_default:{namespace} points to provided id and there is no other default in this namespace.
+ */
+async function syncDefaultMapping(namespace: string, id: string): Promise<void> {
+  const mappingKey = ["prompts_default", namespace];
+  const mapping = await kv.get<string>(mappingKey);
+  const prevId = mapping.value;
+
+  if (prevId && prevId !== id) {
+    const prev = await getPrompt(prevId);
+    if (prev?.isDefault) {
+      await updatePrompt(prevId, { isDefault: false }, { skipDefaultSync: true });
+    }
+  }
+  await kv.set(mappingKey, id);
+}
+
+/**
+ * Synchronize default mapping for a specific namespace based on current prompts state.
+ * Picks the best candidate among prompts with isDefault=true (by priority desc, updatedAt desc).
+ * Ensures only one default remains in the namespace and updates mapping accordingly.
+ */
+export async function syncDefaultForNamespace(namespace: string): Promise<{ namespace: string; id?: string; unset: string[] }> {
+  const candidates: Prompt[] = [];
+  const othersToUnset: string[] = [];
+
+  const iter = kv.list<Prompt>({ prefix: ["prompts"] });
+  for await (const entry of iter) {
+    const p = entry.value;
+    if (!p) continue;
+    if (p.namespace !== namespace) continue;
+    if (p.isDefault) candidates.push(p);
+  }
+
+  // Select best candidate if any
+  let selected: Prompt | undefined;
+  if (candidates.length > 0) {
+    candidates.sort((a, b) => {
+      if (a.priority !== b.priority) return b.priority - a.priority; // higher first
+      return a.updatedAt < b.updatedAt ? 1 : (a.updatedAt > b.updatedAt ? -1 : 0); // newer first
+    });
+    selected = candidates[0];
+    for (const p of candidates.slice(1)) {
+      othersToUnset.push(p.id);
+    }
+  }
+
+  const mappingKey = ["prompts_default", namespace];
+
+  if (selected) {
+    // Unset others
+    for (const id of othersToUnset) {
+      await updatePrompt(id, { isDefault: false }, { skipDefaultSync: true });
+    }
+    // Set mapping to selected
+    await kv.set(mappingKey, selected.id);
+    return { namespace, id: selected.id, unset: othersToUnset };
+  } else {
+    // No candidate; remove mapping if exists
+    await kv.delete(mappingKey);
+    return { namespace, unset: [] };
+  }
+}
+
+/**
+ * Synchronize default mappings for all namespaces found in prompts.
+ */
+export async function syncDefaultMappingsAll(): Promise<Array<{ namespace: string; id?: string; unset: string[] }>> {
+  const namespaces = new Set<string>();
+  const iter = kv.list<Prompt>({ prefix: ["prompts"] });
+  for await (const entry of iter) {
+    const p = entry.value;
+    if (p) namespaces.add(p.namespace);
+  }
+  const results: Array<{ namespace: string; id?: string; unset: string[] }> = [];
+  for (const ns of namespaces) {
+    results.push(await syncDefaultForNamespace(ns));
+  }
+  return results;
 }

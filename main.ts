@@ -16,7 +16,7 @@ import { callBigModel } from "./lib/providers/bigmodel.ts";
 import { callOpenRouter } from "./lib/providers/openrouter.ts";
 
 // --- Prompts API ---
-import { createPrompt, getPrompt, updatePrompt, deletePrompt, listPrompts } from "./lib/storage/prompts.ts";
+import { createPrompt, getPrompt, updatePrompt, deletePrompt, listPrompts, getDefaultPrompt, setDefaultPrompt, syncDefaultForNamespace, syncDefaultMappingsAll } from "./lib/storage/prompts.ts";
 import type { PromptCreate, PromptUpdate, PromptListFilters } from "./lib/storage/types.ts";
 
 // --- Router Patterns ---
@@ -27,6 +27,9 @@ const PROMPT_LIST_PATTERN = new URLPattern({ pathname: "/v1/prompts" });
 const PROMPT_GET_PATTERN = new URLPattern({ pathname: "/v1/prompts/:id" });
 const PROMPT_UPDATE_PATTERN = new URLPattern({ pathname: "/v1/prompts/:id" });
 const PROMPT_DELETE_PATTERN = new URLPattern({ pathname: "/v1/prompts/:id" });
+const PROMPT_GET_DEFAULT_PATTERN = new URLPattern({ pathname: "/v1/prompts/default" });
+const PROMPT_SET_DEFAULT_PATTERN = new URLPattern({ pathname: "/v1/prompts/:id/default" });
+const ADMIN_SYNC_DEFAULTS_PATTERN = new URLPattern({ pathname: "/admin/prompts/defaults/sync" });
 const HEALTHZ_PATTERN = new URLPattern({ pathname: "/healthz" });
 
 /**
@@ -70,12 +73,17 @@ async function handler(req: Request): Promise<Response> {
       return await handleListPrompts(req, requestId);
     }
 
+    // Check specific default route before generic :id route
+    const promptGetDefaultMatch = PROMPT_GET_DEFAULT_PATTERN.exec(url);
+    if (promptGetDefaultMatch && req.method === "GET") {
+      return await handleGetDefaultPrompt(req, requestId);
+    }
+
     const promptGetMatch = PROMPT_GET_PATTERN.exec(url);
     if (promptGetMatch && req.method === "GET") {
       const id = promptGetMatch.pathname.groups.id!;
       return await handleGetPrompt(req, id, requestId);
     }
-
     const promptUpdateMatch = PROMPT_UPDATE_PATTERN.exec(url);
     if (promptUpdateMatch && req.method === "PUT") {
       const id = promptUpdateMatch.pathname.groups.id!;
@@ -86,6 +94,17 @@ async function handler(req: Request): Promise<Response> {
     if (promptDeleteMatch && req.method === "DELETE") {
       const id = promptDeleteMatch.pathname.groups.id!;
       return await handleDeletePrompt(req, id, requestId);
+    }
+
+    const promptSetDefaultMatch = PROMPT_SET_DEFAULT_PATTERN.exec(url);
+    if (promptSetDefaultMatch && req.method === "PUT") {
+      const id = promptSetDefaultMatch.pathname.groups.id!;
+      return await handleSetDefaultPrompt(req, id, requestId);
+    }
+
+    const adminSyncDefaultsMatch = ADMIN_SYNC_DEFAULTS_PATTERN.exec(url);
+    if (adminSyncDefaultsMatch && req.method === "POST") {
+      return await handleSyncDefaults(req, requestId);
     }
 
     // 404 Not Found
@@ -269,6 +288,83 @@ async function handleVisionAnalyze(
     return errorResponse(req, {
       code: "VISION_ERROR",
       message: error instanceof Error ? error.message : "Vision API error",
+      status: 500,
+      requestId,
+    });
+  }
+}
+
+async function handleGetDefaultPrompt(req: Request, requestId: string): Promise<Response> {
+  try {
+    const url = new URL(req.url);
+    const ns = url.searchParams.get("namespace") || undefined;
+    const prompt = await getDefaultPrompt(ns);
+    if (!prompt) {
+      return errorResponse(req, { code: "NOT_FOUND", message: "Default prompt not found", status: 404, requestId });
+    }
+    return jsonResponse(req, prompt);
+  } catch (error) {
+    logError({ request_id: requestId, route: "/v1/prompts/default", error: String(error) });
+    return errorResponse(req, {
+      code: "PROMPT_DEFAULT_GET_FAILED",
+      message: error instanceof Error ? error.message : "Failed to get default prompt",
+      status: 500,
+      requestId,
+    });
+  }
+}
+
+async function handleSetDefaultPrompt(req: Request, id: string, requestId: string): Promise<Response> {
+  const authError = checkAdminToken(req);
+  if (authError) return authError;
+  try {
+    const url = new URL(req.url);
+    let namespace = url.searchParams.get("namespace") || undefined;
+
+    // Also allow namespace in JSON body if provided
+    const ctype = req.headers.get("Content-Type") || "";
+    if (!namespace && ctype.includes("application/json")) {
+      try {
+        const body = await req.json() as { namespace?: string };
+        if (body?.namespace) namespace = body.namespace;
+      } catch {
+        // ignore body parse errors
+      }
+    }
+
+    const updated = await setDefaultPrompt(id, namespace);
+    if (!updated) {
+      return errorResponse(req, { code: "NOT_FOUND", message: `Prompt with id '${id}' not found`, status: 404, requestId });
+    }
+    return jsonResponse(req, updated);
+  } catch (error) {
+    logError({ request_id: requestId, route: `/v1/prompts/${id}/default`, error: String(error) });
+    return errorResponse(req, {
+      code: "PROMPT_DEFAULT_SET_FAILED",
+      message: error instanceof Error ? error.message : "Failed to set default prompt",
+      status: 500,
+      requestId,
+    });
+  }
+}
+
+async function handleSyncDefaults(req: Request, requestId: string): Promise<Response> {
+  const authError = checkAdminToken(req);
+  if (authError) return authError;
+  try {
+    const url = new URL(req.url);
+    const namespace = url.searchParams.get("namespace") || undefined;
+    if (namespace) {
+      const result = await syncDefaultForNamespace(namespace);
+      return jsonResponse(req, { ok: true, result });
+    }
+    const results = await syncDefaultMappingsAll();
+    return jsonResponse(req, { ok: true, results });
+  } catch (error) {
+    logError({ request_id: requestId, route: "/admin/prompts/defaults/sync", error: String(error) });
+    return errorResponse(req, {
+      code: "PROMPT_DEFAULT_SYNC_FAILED",
+      message: error instanceof Error ? error.message : "Failed to sync default mappings",
       status: 500,
       requestId,
     });
