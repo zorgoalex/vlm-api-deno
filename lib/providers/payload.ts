@@ -3,7 +3,7 @@
  */
 
 export interface VisionInput {
-  provider?: "bigmodel" | "openrouter";
+  provider?: "zai" | "bigmodel" | "openrouter";
   model?: string;
   prompt?: string;
   image_url?: string;
@@ -15,7 +15,9 @@ export interface VisionInput {
 }
 
 export function buildVisionPayload(input: VisionInput) {
-  const provider = input.provider || "bigmodel";
+  const provider = input.provider === "zai" || input.provider === "bigmodel" || input.provider === "openrouter"
+    ? input.provider
+    : "zai";
   const model = input.model?.trim() || getDefaultModel(provider);
 
   // Build content array
@@ -24,14 +26,6 @@ export function buildVisionPayload(input: VisionInput) {
     text?: string;
     image_url?: { url: string; detail?: string };
   }> = [];
-
-  // Add text prompt
-  if (input.prompt) {
-    content.push({
-      type: "text",
-      text: input.prompt,
-    });
-  }
 
   // Collect all image URLs
   const imageUrls: string[] = [];
@@ -58,6 +52,20 @@ export function buildVisionPayload(input: VisionInput) {
     content.push(imageContent);
   }
 
+  // Add text prompt
+  if (input.prompt) {
+    const textContent = {
+      type: "text",
+      text: input.prompt,
+    };
+    // ZAI docs examples put image first, then text.
+    if (provider === "zai") {
+      content.push(textContent);
+    } else {
+      content.unshift(textContent);
+    }
+  }
+
   // Build messages
   const messages = [
     {
@@ -73,7 +81,7 @@ export function buildVisionPayload(input: VisionInput) {
   };
 
   // Add thinking for BigModel
-  if (provider === "bigmodel" && input.thinking) {
+  if ((provider === "bigmodel" || provider === "zai") && input.thinking) {
     if (typeof input.thinking === "string") {
       payload.thinking = { type: input.thinking };
     } else if (typeof input.thinking === "object" && input.thinking.type) {
@@ -84,13 +92,13 @@ export function buildVisionPayload(input: VisionInput) {
   return { payload, provider };
 }
 
-function getDefaultModel(provider: "bigmodel" | "openrouter"): string {
+function getDefaultModel(provider: "zai" | "bigmodel" | "openrouter"): string {
   const envModel = Deno.env.get("DEFAULT_MODEL");
   if (envModel) return envModel;
 
-  return provider === "bigmodel"
-    ? "glm-4.5v"
-    : "qwen/qwen2.5-vl-72b-instruct";
+  if (provider === "zai") return "glm-4.6v-flash";
+  if (provider === "bigmodel") return "glm-4.5v";
+  return "qwen/qwen2.5-vl-72b-instruct";
 }
 
 /**

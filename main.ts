@@ -14,6 +14,7 @@ import { passthroughSSE } from "./lib/streaming/sse.ts";
 import { parseVisionRequest, buildVisionPayload } from "./lib/providers/payload.ts";
 import { callBigModel } from "./lib/providers/bigmodel.ts";
 import { callOpenRouter } from "./lib/providers/openrouter.ts";
+import { callZai } from "./lib/providers/zai.ts";
 
 // --- Prompts API ---
 import { createPrompt, getPrompt, updatePrompt, deletePrompt, listPrompts, getDefaultPrompt, setDefaultPrompt, syncDefaultForNamespace, syncDefaultMappingsAll } from "./lib/storage/prompts.ts";
@@ -267,10 +268,23 @@ async function handleVisionAnalyze(
     const { payload, provider } = buildVisionPayload(input);
 
     let upstreamResponse: Response;
-    if (provider === "bigmodel") {
-      upstreamResponse = await callBigModel(payload, shouldStream);
-    } else {
-      upstreamResponse = await callOpenRouter(payload, shouldStream);
+    switch (provider) {
+      case "zai":
+        upstreamResponse = await callZai(payload, shouldStream);
+        break;
+      case "bigmodel":
+        upstreamResponse = await callBigModel(payload, shouldStream);
+        break;
+      case "openrouter":
+        upstreamResponse = await callOpenRouter(payload, shouldStream);
+        break;
+      default:
+        return errorResponse(req, {
+          code: "INVALID_PROVIDER",
+          message: `Unsupported provider '${String(provider)}'`,
+          status: 400,
+          requestId,
+        });
     }
 
     if (shouldStream) {

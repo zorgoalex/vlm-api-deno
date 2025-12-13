@@ -1,11 +1,11 @@
 # VLM API (Deno Deploy)
 
-Edge‑прокси для Vision Language Models (VLM/VLMM) с поддержкой BigModel и OpenRouter. Проект рассчитан на работу в Deno Deploy (edge‑runtime) и использует Deno KV для хранения и управления промптами.
+Edge-прокси для Vision Language Models (VLM/VLMM) с поддержкой ZAI, BigModel и OpenRouter. Проект рассчитан на работу в Deno Deploy (edge-runtime) и использует Deno KV для хранения и управления промптами.
 
 ## Возможности
 
 - **Vision API**: анализ изображений в формате JSON или потоково через SSE.
-- **Провайдеры**: BigModel (по умолчанию) и OpenRouter (опционально).
+- **Провайдеры**: ZAI (по умолчанию), BigModel и OpenRouter (опционально).
 - **Prompts API**: хранение промптов в Deno KV, CRUD, список с фильтрами/сортировкой/пагинацией, поддержка default‑промпта.
 - **Edge‑runtime**: быстрый холодный старт, стриминг без таймаутов.
 - **CORS**: настройка разрешённых origins через переменные окружения.
@@ -38,8 +38,8 @@ Edge‑прокси для Vision Language Models (VLM/VLMM) с поддержк
 Поддерживаемые входные форматы:
 
 - `application/json`
-  - `provider`: `bigmodel | openrouter` (опционально, по умолчанию `bigmodel`)
-  - `model`: строка (если не задана — используется `DEFAULT_MODEL`)
+  - `provider`: `zai | bigmodel | openrouter` (опционально, по умолчанию `zai`)
+  - `model`: строка (если не задана - используется `DEFAULT_MODEL`, иначе провайдерный дефолт)
   - `prompt`: строка
   - `image_url`: URL изображения или data‑URL
   - `image_base64`: base64 без `data:` префикса (будет обёрнут в data‑URL)
@@ -55,8 +55,8 @@ Edge‑прокси для Vision Language Models (VLM/VLMM) с поддержк
 curl -X POST http://localhost:8000/v1/vision/analyze \
   -H "Content-Type: application/json" \
   -d '{
-    "provider": "bigmodel",
-    "model": "glm-4.5v",
+    "provider": "zai",
+    "model": "glm-4.6v-flash",
     "prompt": "Что на фото?",
     "image_url": "https://example.com/image.jpg"
   }'
@@ -68,7 +68,7 @@ curl -X POST http://localhost:8000/v1/vision/analyze \
 curl -N -X POST http://localhost:8000/v1/vision/stream \
   -H "Content-Type: application/json" \
   -d '{
-    "provider": "bigmodel",
+    "provider": "zai",
     "prompt": "Опиши подробно",
     "image_url": "https://example.com/image.jpg",
     "stream": true
@@ -116,13 +116,14 @@ curl -X POST http://localhost:8000/v1/prompts \
 
 Обязательные:
 
-- `BIGMODEL_API_KEY` — ключ BigModel.
-- `DEFAULT_MODEL` — модель по умолчанию (например, `glm-4.5v`).
-- `ADMIN_TOKEN` — токен для админ‑операций (Prompts write + админ‑эндпоинты).
+- `ZAI_API_KEY` - ключ ZAI (провайдер по умолчанию).
+- `DEFAULT_MODEL` - модель по умолчанию (например, `glm-4.6v-flash`).
+- `ADMIN_TOKEN` - токен для админ-операций (Prompts write + админ-эндпоинты).
 
 Опциональные:
 
-- `OPENROUTER_API_KEY` — ключ OpenRouter (если используется).
+- `BIGMODEL_API_KEY` - ключ BigModel (если используется).
+- `OPENROUTER_API_KEY` - ключ OpenRouter (если используется).
 - `APP_URL`, `APP_TITLE` — метаданные приложения.
 - `ALLOWED_ORIGINS` — CORS origins через запятую.
 - Безопасность (включение/настройка по необходимости):  
