@@ -16,6 +16,10 @@ import { callBigModel } from "./lib/providers/bigmodel.ts";
 import { callOpenRouter } from "./lib/providers/openrouter.ts";
 import { callZai } from "./lib/providers/zai.ts";
 
+// --- Image Upload (R2) ---
+import { putObjectToR2, presignGetObjectUrl, getPublicObjectUrl } from "./lib/storage/r2.ts";
+import { sniffImageInfo } from "./lib/utils/image.ts";
+
 // --- Prompts API ---
 import { createPrompt, getPrompt, updatePrompt, deletePrompt, listPrompts, getDefaultPrompt, setDefaultPrompt, syncDefaultForNamespace, syncDefaultMappingsAll } from "./lib/storage/prompts.ts";
 import type { PromptCreate, PromptUpdate, PromptListFilters } from "./lib/storage/types.ts";
@@ -32,6 +36,7 @@ const PROMPT_GET_DEFAULT_PATTERN = new URLPattern({ pathname: "/v1/prompts/defau
 const PROMPT_SET_DEFAULT_PATTERN = new URLPattern({ pathname: "/v1/prompts/:id/default" });
 const ADMIN_SYNC_DEFAULTS_PATTERN = new URLPattern({ pathname: "/admin/prompts/defaults/sync" });
 const HEALTHZ_PATTERN = new URLPattern({ pathname: "/healthz" });
+const IMAGE_UPLOAD_PATTERN = new URLPattern({ pathname: "/v1/images/upload" });
 
 /**
  * Main request handler.
@@ -62,6 +67,11 @@ async function handler(req: Request): Promise<Response> {
       const response = jsonResponse(req, { ok: true, ts: Date.now() });
       logRequest(req, 200, Date.now() - startTime, { request_id: requestId });
       return response;
+    }
+
+    const imageUploadMatch = IMAGE_UPLOAD_PATTERN.exec(url);
+    if (imageUploadMatch && req.method === "POST") {
+      return await handleUploadImage(req, requestId);
     }
 
     const promptCreateMatch = PROMPT_CREATE_PATTERN.exec(url);
@@ -302,6 +312,116 @@ async function handleVisionAnalyze(
     return errorResponse(req, {
       code: "VISION_ERROR",
       message: error instanceof Error ? error.message : "Vision API error",
+      status: 500,
+      requestId,
+    });
+  }
+}
+
+async function handleUploadImage(req: Request, requestId: string): Promise<Response> {
+  const contentType = req.headers.get("content-type") || "";
+  const ct = contentType.toLowerCase();
+  if (!ct.startsWith("multipart/form-data")) {
+    return errorResponse(req, {
+      code: "INVALID_CONTENT_TYPE",
+      message: "Expected multipart/form-data",
+      status: 400,
+      details: { contentType },
+      requestId,
+    });
+  }
+
+  try {
+    const formData = await req.formData();
+    const file = formData.get("file");
+    if (!(file instanceof File)) {
+      return errorResponse(req, {
+        code: "MISSING_FILE",
+        message: "Form field 'file' is required",
+        status: 400,
+        requestId,
+      });
+    }
+
+    const allowedMime = new Set(["image/jpeg", "image/png"]);
+    if (!allowedMime.has(file.type)) {
+      return errorResponse(req, {
+        code: "UNSUPPORTED_MEDIA_TYPE",
+        message: `Unsupported file type '${file.type}'. Supported: jpg, jpeg, png`,
+        status: 415,
+        requestId,
+      });
+    }
+
+    const maxBytes = 5 * 1024 * 1024; // ZAI limit per image: < 5MB
+    if (file.size <= 0 || file.size > maxBytes) {
+      return errorResponse(req, {
+        code: "FILE_TOO_LARGE",
+        message: `Image size must be > 0 and <= ${maxBytes} bytes`,
+        status: 413,
+        requestId,
+      });
+    }
+
+    const bytes = new Uint8Array(await file.arrayBuffer());
+    const info = sniffImageInfo(bytes);
+    if (!info) {
+      return errorResponse(req, {
+        code: "INVALID_IMAGE",
+        message: "Invalid or unsupported image data. Supported: jpg, jpeg, png",
+        status: 400,
+        requestId,
+      });
+    }
+
+    const maxPx = 6000; // ZAI limit: 6000*6000
+    if (info.width > maxPx || info.height > maxPx) {
+      return errorResponse(req, {
+        code: "IMAGE_TOO_LARGE",
+        message: `Image dimensions must be <= ${maxPx}x${maxPx}`,
+        status: 413,
+        requestId,
+      });
+    }
+
+    const ext = info.format === "png" ? "png" : "jpg";
+    const now = new Date();
+    const y = now.getUTCFullYear().toString().padStart(4, "0");
+    const m = (now.getUTCMonth() + 1).toString().padStart(2, "0");
+    const d = now.getUTCDate().toString().padStart(2, "0");
+    const key = `tmp/${y}/${m}/${d}/${crypto.randomUUID()}.${ext}`;
+
+    const putResult = await putObjectToR2(key, bytes, file.type);
+
+    const publicUrl = getPublicObjectUrl(key);
+    if (publicUrl) {
+      return jsonResponse(req, {
+        key: putResult.key,
+        url: publicUrl,
+        etag: putResult.etag,
+        contentType: file.type,
+        size: file.size,
+        width: info.width,
+        height: info.height,
+      }, 201);
+    }
+
+    const signed = await presignGetObjectUrl(key, 3600);
+    return jsonResponse(req, {
+      key: putResult.key,
+      url: signed.url,
+      expiresInSec: signed.expiresInSec,
+      etag: putResult.etag,
+      contentType: file.type,
+      size: file.size,
+      width: info.width,
+      height: info.height,
+    }, 201);
+  } catch (error) {
+    logError({ request_id: requestId, route: "/v1/images/upload", error: String(error) });
+    return errorResponse(req, {
+      code: "IMAGE_UPLOAD_FAILED",
+      message: error instanceof Error ? error.message : "Failed to upload image",
       status: 500,
       requestId,
     });

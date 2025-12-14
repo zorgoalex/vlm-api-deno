@@ -181,3 +181,12 @@ deno task test
 ## Лицензия
 
 MIT.
+
+## Images (R2 upload)
+
+Use this endpoint to upload a local image (multipart/form-data) to Cloudflare R2 and get an `image_url` for ZAI.
+
+- `POST /v1/images/upload`
+  - `multipart/form-data`: `file` (image/jpeg|image/png)
+  - Limits (ZAI): size <= 5MB, pixels <= 6000x6000
+  - Response: `{ key, url, expiresInSec?, etag?, contentType, size, width, height }`
