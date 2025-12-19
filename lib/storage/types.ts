@@ -50,3 +50,15 @@ export interface PromptListResult {
   items: Prompt[];
   cursor?: string; // opaque cursor for next page
 }
+
+/**
+ * Criteria for selecting a prompt from KV for runtime usage.
+ */
+export interface PromptCriteria {
+  namespace?: string;
+  name?: string;
+  version?: number;
+  lang?: string;
+  tags?: string[];
+  priority?: number;
+}

@@ -1,4 +1,4 @@
-# VLM API (Deno Deploy)
+﻿# VLM API (Deno Deploy)
 
 Edge-прокси для Vision Language Models (VLM/VLMM) с поддержкой ZAI, BigModel и OpenRouter. Проект рассчитан на работу в Deno Deploy (edge-runtime) и использует Deno KV для хранения и управления промптами.
 
@@ -28,7 +28,7 @@ Edge-прокси для Vision Language Models (VLM/VLMM) с поддержко
 
 ### Health
 
-- `GET /healthz` — проверка живости.
+- `GET /healthz` — проверка healthz.
 
 ### Vision
 
@@ -38,9 +38,12 @@ Edge-прокси для Vision Language Models (VLM/VLMM) с поддержко
 Поддерживаемые входные форматы:
 
 - `application/json`
-  - `provider`: `zai | bigmodel | openrouter` (опционально, по умолчанию `zai`)
+  - `provider`: `zai | bigmodel | openrouter` (опционально, по умолчанию `openrouter`)
   - `model`: строка (если не задана - используется `DEFAULT_MODEL`, иначе провайдерный дефолт)
-  - `prompt`: строка
+  - `prompt`: строка (если не задана и нет `prompt_kv`, используется default?промпт из KV)
+  - `prompt_id`: строковый ID промпта (взаимоисключает `prompt_kv`)
+  - `prompt_kv`: объект критериев для выбора промпта из KV (используется, если `prompt` не задан)
+    - `namespace`, `name`, `version`, `lang`, `tags`, `priority`
   - `image_url`: URL изображения или data‑URL
   - `image_base64`: base64 без `data:` префикса (будет обёрнут в data‑URL)
   - `images`: массив дополнительных URL/data‑URL (опционально)
@@ -48,6 +51,12 @@ Edge-прокси для Vision Language Models (VLM/VLMM) с поддержко
   - `stream`: boolean (для SSE используйте `/v1/vision/stream`)
 - `multipart/form-data`
   - `file` (image/*), `prompt`, опционально `provider`, `model`, `detail`, `images`
+  - `prompt_id` (строка)
+  - `prompt_kv` (JSON?строка) или поля: `prompt_kv_namespace`, `prompt_kv_name`, `prompt_kv_version`, `prompt_kv_lang`, `prompt_kv_tags`, `prompt_kv_priority`
+
+Если `prompt` и `prompt_kv` не заданы, используется default?промпт из KV с критериями: `namespace=default`, `priority=1`, `isDefault=true`, `isActive=true`. При равенстве выбирается наибольшая `version`.
+Если `prompt` задан и не пустой, он имеет приоритет над `prompt_kv` и `prompt_id`.
+`prompt_kv` и `prompt_id` взаимоисключают друг друга.
 
 Пример JSON‑запроса:
 
@@ -60,6 +69,35 @@ curl -X POST http://localhost:8000/v1/vision/analyze \
     "prompt": "Что на фото?",
     "image_url": "https://example.com/image.jpg"
   }'
+```
+
+Пример payload с `prompt_kv`:
+
+```json
+{
+  "provider": "zai",
+  "model": "glm-4.6v-flash",
+  "prompt_kv": {
+    "namespace": "default",
+    "name": "order_parser",
+    "version": 2,
+    "lang": "ru",
+    "tags": ["parser", "orders"],
+    "priority": 10
+  },
+  "image_url": "https://example.com/image.jpg"
+}
+```
+
+Пример payload с `prompt_id`:
+
+```json
+{
+  "provider": "zai",
+  "model": "glm-4.6v-flash",
+  "prompt_id": "XXXXXXXXXXXXXXX",
+  "image_url": "https://example.com/image.jpg"
+}
 ```
 
 Пример SSE‑стрима:
@@ -106,7 +144,7 @@ curl -X POST http://localhost:8000/v1/prompts \
     "text": "Извлеки информацию о заказе из изображения...",
     "tags": ["parser", "orders"],
     "priority": 10,
-    "is_active": true
+    "isActive": true
   }'
 ```
 
@@ -116,14 +154,14 @@ curl -X POST http://localhost:8000/v1/prompts \
 
 Обязательные:
 
-- `ZAI_API_KEY` - ключ ZAI (провайдер по умолчанию).
+- `OPENROUTER_API_KEY` - ключ OpenRouter (провайдер по умолчанию).
 - `DEFAULT_MODEL` - модель по умолчанию (например, `glm-4.6v-flash`).
 - `ADMIN_TOKEN` - токен для админ-операций (Prompts write + админ-эндпоинты).
 
 Опциональные:
 
+- `ZAI_API_KEY` - ключ ZAI (если используется).
 - `BIGMODEL_API_KEY` - ключ BigModel (если используется).
-- `OPENROUTER_API_KEY` - ключ OpenRouter (если используется).
 - `APP_URL`, `APP_TITLE` — метаданные приложения.
 - `ALLOWED_ORIGINS` — CORS origins через запятую.
 - Безопасность (включение/настройка по необходимости):  
@@ -190,3 +228,4 @@ Use this endpoint to upload a local image (multipart/form-data) to Cloudflare R2
   - `multipart/form-data`: `file` (image/jpeg|image/png)
   - Limits (ZAI): size <= 5MB, pixels <= 6000x6000
   - Response: `{ key, url, expiresInSec?, etag?, contentType, size, width, height }`
+

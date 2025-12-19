@@ -21,7 +21,7 @@ import { putObjectToR2, presignGetObjectUrl, getPublicObjectUrl } from "./lib/st
 import { sniffImageInfo } from "./lib/utils/image.ts";
 
 // --- Prompts API ---
-import { createPrompt, getPrompt, updatePrompt, deletePrompt, listPrompts, getDefaultPrompt, setDefaultPrompt, syncDefaultForNamespace, syncDefaultMappingsAll } from "./lib/storage/prompts.ts";
+import { createPrompt, getPrompt, updatePrompt, deletePrompt, listPrompts, getDefaultPrompt, setDefaultPrompt, syncDefaultForNamespace, syncDefaultMappingsAll, findPromptByCriteria, findDefaultVisionPrompt } from "./lib/storage/prompts.ts";
 import type { PromptCreate, PromptUpdate, PromptListFilters } from "./lib/storage/types.ts";
 
 // --- Router Patterns ---
@@ -274,6 +274,59 @@ async function handleVisionAnalyze(
 ): Promise<Response> {
   try {
     const input = await parseVisionRequest(req);
+    const hasInlinePrompt = typeof input.prompt === "string" && input.prompt.trim().length > 0;
+    const hasPromptId = typeof input.prompt_id === "string" && input.prompt_id.trim().length > 0;
+    const hasPromptKv = input.prompt_kv !== undefined;
+    let promptMeta: Record<string, unknown> | undefined;
+
+    if (!hasInlinePrompt) {
+      if (hasPromptId && hasPromptKv) {
+        return errorResponse(req, {
+          code: "INVALID_PROMPT_SELECTOR",
+          message: "Use either prompt_id or prompt_kv",
+          status: 400,
+          requestId,
+        });
+      }
+      if (hasPromptId) {
+        const resolved = await getPrompt(input.prompt_id!);
+        if (!resolved) {
+          return errorResponse(req, {
+            code: "PROMPT_NOT_FOUND",
+            message: "Prompt not found for provided id",
+            status: 404,
+            requestId,
+          });
+        }
+        input.prompt = resolved.text;
+        promptMeta = { prompt_source: "kv_id", prompt_id: resolved.id };
+      } else if (hasPromptKv) {
+        const resolved = await findPromptByCriteria(input.prompt_kv);
+        if (!resolved) {
+          return errorResponse(req, {
+            code: "PROMPT_NOT_FOUND",
+            message: "Prompt not found for provided criteria",
+            status: 404,
+            requestId,
+          });
+        }
+        input.prompt = resolved.text;
+        promptMeta = { prompt_source: "kv", prompt_id: resolved.id };
+      } else {
+        const resolved = await findDefaultVisionPrompt();
+        if (!resolved) {
+          return errorResponse(req, {
+            code: "PROMPT_NOT_FOUND",
+            message: "Default prompt not found",
+            status: 404,
+            requestId,
+          });
+        }
+        input.prompt = resolved.text;
+        promptMeta = { prompt_source: "kv_default", prompt_id: resolved.id };
+      }
+    }
+
     const shouldStream = forceStream || input.stream === true;
     const { payload, provider } = buildVisionPayload(input);
 
@@ -299,13 +352,13 @@ async function handleVisionAnalyze(
 
     if (shouldStream) {
       const response = passthroughSSE(req, upstreamResponse);
-      logRequest(req, 200, Date.now() - startTime, { request_id: requestId, provider, stream: true });
+      logRequest(req, 200, Date.now() - startTime, { request_id: requestId, provider, stream: true, ...(promptMeta ?? {}) });
       return response;
     }
 
     const jsonData = await upstreamResponse.json();
     const response = jsonResponse(req, jsonData);
-    logRequest(req, 200, Date.now() - startTime, { request_id: requestId, provider, stream: false });
+    logRequest(req, 200, Date.now() - startTime, { request_id: requestId, provider, stream: false, ...(promptMeta ?? {}) });
     return response;
   } catch (error) {
     logError({ request_id: requestId, route: "/v1/vision/*", error: String(error) });

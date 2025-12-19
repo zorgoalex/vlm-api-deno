@@ -1,4 +1,4 @@
-import { Prompt, PromptCreate, PromptUpdate, PromptListFilters, PromptListResult } from "./types.ts";
+import { Prompt, PromptCreate, PromptUpdate, PromptListFilters, PromptListResult, PromptCriteria } from "./types.ts";
 import { ulid } from "jsr:@std/ulid";
 
 // We will open the KV store once and can reuse the instance.
@@ -227,6 +227,112 @@ export async function listPrompts(filters: PromptListFilters = {}): Promise<Prom
   });
 
   return { items, cursor: nextCursor };
+}
+
+/**
+ * Finds the best matching prompt using optional criteria.
+ * Priority is resolved by higher priority, then higher version, then newer updatedAt.
+ */
+export async function findPromptByCriteria(criteria: PromptCriteria): Promise<Prompt | null> {
+  const desiredVersion = Number.isFinite(criteria.version) ? criteria.version : undefined;
+  const desiredPriority = Number.isFinite(criteria.priority) ? criteria.priority : undefined;
+
+  const hasCriteria = Boolean(
+    criteria.namespace ||
+    criteria.name ||
+    desiredVersion !== undefined ||
+    criteria.lang ||
+    (criteria.tags && criteria.tags.length > 0) ||
+    desiredPriority !== undefined
+  );
+  if (!hasCriteria) return null;
+
+  const matches = (p: Prompt) => {
+    if (criteria.namespace && p.namespace !== criteria.namespace) return false;
+    if (criteria.name && p.name !== criteria.name) return false;
+    if (desiredVersion !== undefined && p.version !== desiredVersion) return false;
+    if (criteria.lang && p.lang !== criteria.lang) return false;
+    if (criteria.tags && criteria.tags.length > 0) {
+      if (!p.tags || criteria.tags.some((tag) => !p.tags.includes(tag))) return false;
+    }
+    if (desiredPriority !== undefined && p.priority !== desiredPriority) return false;
+    return true;
+  };
+
+  const isBetter = (candidate: Prompt, current: Prompt) => {
+    if (candidate.priority !== current.priority) return candidate.priority > current.priority;
+    if (candidate.version !== current.version) return candidate.version > current.version;
+    return candidate.updatedAt > current.updatedAt;
+  };
+
+  // Fast path: exact natural key
+  if (criteria.namespace && criteria.name && desiredVersion !== undefined) {
+    const key = ["prompts_by_name", criteria.namespace, criteria.name, desiredVersion];
+    const mapping = await kv.get<string>(key);
+    if (!mapping.value) return null;
+    const prompt = await getPrompt(mapping.value);
+    return prompt && matches(prompt) ? prompt : null;
+  }
+
+  let best: Prompt | null = null;
+
+  if (criteria.namespace && criteria.name) {
+    const iter = kv.list<string>({ prefix: ["prompts_by_name", criteria.namespace, criteria.name] });
+    for await (const entry of iter) {
+      const promptId = entry.value;
+      const p = await getPrompt(promptId);
+      if (!p || !matches(p)) continue;
+      if (!best || isBetter(p, best)) best = p;
+    }
+    return best;
+  }
+
+  if (criteria.namespace) {
+    const iter = kv.list<string>({ prefix: ["prompts_by_name", criteria.namespace] });
+    for await (const entry of iter) {
+      const promptId = entry.value;
+      const p = await getPrompt(promptId);
+      if (!p || !matches(p)) continue;
+      if (!best || isBetter(p, best)) best = p;
+    }
+    return best;
+  }
+
+  const iter = kv.list<Prompt>({ prefix: ["prompts"] });
+  for await (const entry of iter) {
+    const p = entry.value;
+    if (!p || !matches(p)) continue;
+    if (!best || isBetter(p, best)) best = p;
+  }
+  return best;
+}
+
+/**
+ * Finds a default prompt for Vision requests when no inline prompt is provided.
+ * Criteria: namespace=default, priority=1, isDefault=true, isActive=true.
+ * Selects the highest version, then most recently updated.
+ */
+export async function findDefaultVisionPrompt(): Promise<Prompt | null> {
+  let best: Prompt | null = null;
+  const iter = kv.list<Prompt>({ prefix: ["prompts"] });
+  for await (const entry of iter) {
+    const p = entry.value;
+    if (!p) continue;
+    if (p.namespace !== "default") continue;
+    if (p.priority !== 1) continue;
+    if (!p.isDefault) continue;
+    if (!p.isActive) continue;
+    if (!best) {
+      best = p;
+      continue;
+    }
+    if (p.version !== best.version) {
+      if (p.version > best.version) best = p;
+      continue;
+    }
+    if (p.updatedAt > best.updatedAt) best = p;
+  }
+  return best;
 }
 
 /**
