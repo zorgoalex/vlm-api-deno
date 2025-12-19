@@ -2,16 +2,127 @@
  * Vision payload builder (OpenAI-compatible format)
  */
 
+import type { PromptCriteria } from "../storage/types.ts";
+
 export interface VisionInput {
   provider?: "zai" | "bigmodel" | "openrouter";
   model?: string;
   prompt?: string;
+  prompt_kv?: PromptCriteria;
+  prompt_id?: string;
   image_url?: string;
   image_base64?: string;
   images?: string[];
   detail?: "low" | "high" | "auto";
   thinking?: "enabled" | "disabled" | { type: "enabled" | "disabled" };
   stream?: boolean;
+}
+
+function parseTagsInput(value: unknown): string[] | undefined {
+  if (Array.isArray(value)) {
+    const tags = value.map((tag) => String(tag).trim()).filter(Boolean);
+    return tags.length > 0 ? tags : undefined;
+  }
+  if (typeof value === "string") {
+    const trimmed = value.trim();
+    if (!trimmed) return undefined;
+    try {
+      const parsed = JSON.parse(trimmed);
+      if (Array.isArray(parsed)) {
+        const tags = parsed.map((tag) => String(tag).trim()).filter(Boolean);
+        return tags.length > 0 ? tags : undefined;
+      }
+    } catch {
+      // ignore JSON parse errors
+    }
+    const tags = trimmed.split(",").map((tag) => tag.trim()).filter(Boolean);
+    return tags.length > 0 ? tags : undefined;
+  }
+  return undefined;
+}
+
+function parseNumberInput(value: unknown): number | undefined {
+  if (typeof value === "number" && Number.isFinite(value)) return value;
+  if (typeof value === "string") {
+    const trimmed = value.trim();
+    if (!trimmed) return undefined;
+    const parsed = Number(trimmed);
+    if (Number.isFinite(parsed)) return parsed;
+  }
+  return undefined;
+}
+
+function normalizePromptCriteria(raw: unknown): PromptCriteria | undefined {
+  if (!raw || typeof raw !== "object") return undefined;
+  const obj = raw as Record<string, unknown>;
+  const criteria: PromptCriteria = {};
+
+  if (typeof obj.namespace === "string" && obj.namespace.trim()) {
+    criteria.namespace = obj.namespace.trim();
+  }
+  if (typeof obj.name === "string" && obj.name.trim()) {
+    criteria.name = obj.name.trim();
+  }
+  const version = parseNumberInput(obj.version);
+  if (version !== undefined) criteria.version = version;
+
+  if (typeof obj.lang === "string" && obj.lang.trim()) {
+    criteria.lang = obj.lang.trim();
+  }
+  const tags = parseTagsInput(obj.tags);
+  if (tags) criteria.tags = tags;
+
+  const priority = parseNumberInput(obj.priority);
+  if (priority !== undefined) criteria.priority = priority;
+
+  return Object.keys(criteria).length > 0 ? criteria : undefined;
+}
+
+function extractPromptCriteria(raw: Record<string, unknown>): PromptCriteria | undefined {
+  let fromObject: PromptCriteria | undefined;
+  if (raw.prompt_kv !== undefined) {
+    if (typeof raw.prompt_kv === "string") {
+      try {
+        fromObject = normalizePromptCriteria(JSON.parse(raw.prompt_kv));
+      } catch {
+        fromObject = undefined;
+      }
+    } else {
+      fromObject = normalizePromptCriteria(raw.prompt_kv);
+    }
+  }
+
+  const fromFlat = normalizePromptCriteria({
+    namespace: raw.prompt_kv_namespace,
+    name: raw.prompt_kv_name,
+    version: raw.prompt_kv_version,
+    lang: raw.prompt_kv_lang,
+    tags: raw.prompt_kv_tags,
+    priority: raw.prompt_kv_priority,
+  });
+
+  const merged: PromptCriteria = {
+    ...(fromObject ?? {}),
+    ...(fromFlat ?? {}),
+  };
+
+  return Object.keys(merged).length > 0 ? merged : undefined;
+}
+
+function normalizeVisionInput(raw: Record<string, unknown>): VisionInput {
+  const promptCriteria = extractPromptCriteria(raw);
+  if (promptCriteria) {
+    raw.prompt_kv = promptCriteria;
+  }
+  if (typeof raw.prompt_id === "string") {
+    const trimmed = raw.prompt_id.trim();
+    if (trimmed) {
+      raw.prompt_id = trimmed;
+    } else {
+      delete raw.prompt_id;
+    }
+  }
+  return raw as VisionInput;
 }
 
 export function buildVisionPayload(input: VisionInput) {
@@ -108,7 +219,8 @@ export async function parseVisionRequest(req: Request): Promise<VisionInput> {
   const contentType = req.headers.get("Content-Type") || "";
 
   if (contentType.includes("application/json")) {
-    return (await req.json()) as VisionInput;
+    const data = await req.json() as Record<string, unknown>;
+    return normalizeVisionInput(data);
   }
 
   if (contentType.includes("multipart/form-data")) {
@@ -138,12 +250,13 @@ export async function parseVisionRequest(req: Request): Promise<VisionInput> {
       }
     }
 
-    return result as VisionInput;
+    return normalizeVisionInput(result as Record<string, unknown>);
   }
 
   // Fallback: try JSON
   try {
-    return (await req.json()) as VisionInput;
+    const data = await req.json() as Record<string, unknown>;
+    return normalizeVisionInput(data);
   } catch {
     return {};
   }
