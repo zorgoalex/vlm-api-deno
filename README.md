@@ -38,7 +38,7 @@ Edge-прокси для Vision Language Models (VLM/VLMM) с поддержко
 Поддерживаемые входные форматы:
 
 - `application/json`
-  - `provider`: `zai | bigmodel | openrouter` (опционально, по умолчанию `openrouter`)
+  - `provider`: `zai | bigmodel | openrouter` (опционально, по умолчанию `zai`)
   - `model`: строка (если не задана - используется `DEFAULT_MODEL`, иначе провайдерный дефолт)
   - `prompt`: строка (если не задана и нет `prompt_kv`, используется default?промпт из KV)
   - `prompt_id`: строковый ID промпта (взаимоисключает `prompt_kv`)
@@ -67,7 +67,8 @@ curl -X POST http://localhost:8000/v1/vision/analyze \
     "provider": "zai",
     "model": "glm-4.6v-flash",
     "prompt": "Что на фото?",
-    "image_url": "https://example.com/image.jpg"
+    "image_url": "https://example.com/image.jpg",
+    "stream": false
   }'
 ```
 
@@ -85,7 +86,8 @@ curl -X POST http://localhost:8000/v1/vision/analyze \
     "tags": ["parser", "orders"],
     "priority": 10
   },
-  "image_url": "https://example.com/image.jpg"
+  "image_url": "https://example.com/image.jpg",
+  "stream": false
 }
 ```
 
@@ -96,7 +98,20 @@ curl -X POST http://localhost:8000/v1/vision/analyze \
   "provider": "zai",
   "model": "glm-4.6v-flash",
   "prompt_id": "XXXXXXXXXXXXXXX",
-  "image_url": "https://example.com/image.jpg"
+  "image_url": "https://example.com/image.jpg",
+  "stream": false
+}
+```
+
+Пример payload без ключей `prompt`, `prompt_kv`, `prompt_id`:
+
+```json
+{
+  "provider": "zai",
+  "model": "glm-4.6v-flash",
+  "image_url": "https://example.com/image.jpg",
+  "thinking": "enabled",
+  "stream": false
 }
 ```
 
