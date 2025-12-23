@@ -1,4 +1,7 @@
 {
+  "imports": {
+    "jose": "npm:jose@5"
+  },
   "tasks": {
     "dev": "deno run --allow-net --allow-env --allow-read --unstable-kv --env --watch main.ts",
     "start": "deno run --allow-net --allow-env --allow-read --unstable-kv --env main.ts",
