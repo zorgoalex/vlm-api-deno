@@ -1,4 +1,7 @@
 {
+  "imports": {
+    "jose": "npm:jose@5"
+  },
   "tasks": {
     "dev": "deno run --allow-net --allow-env --allow-read --unstable-kv --env --watch main.ts",
     "start": "deno run --allow-net --allow-env --allow-read --unstable-kv --env main.ts",
@@ -21,6 +24,7 @@
   "deploy": {
     "project": "5463a986-f36e-4e0a-aeeb-8d0aad18fdd1",
     "exclude": [
+      "**/node_modules",
       "**/node_modules",
       "**/node_modules",
       "**/node_modules",

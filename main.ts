@@ -10,6 +10,10 @@ import { errorResponse, jsonResponse, generateRequestId } from "./lib/utils/erro
 import { logRequest, logError } from "./lib/utils/logging.ts";
 import { passthroughSSE } from "./lib/streaming/sse.ts";
 
+// --- Auth ---
+import { authMiddleware } from "./lib/auth/middleware.ts";
+import type { AuthContext } from "./lib/auth/types.ts";
+
 // --- Vision API ---
 import { parseVisionRequest, buildVisionPayload } from "./lib/providers/payload.ts";
 import { callBigModel } from "./lib/providers/bigmodel.ts";
@@ -36,6 +40,7 @@ const PROMPT_GET_DEFAULT_PATTERN = new URLPattern({ pathname: "/v1/prompts/defau
 const PROMPT_SET_DEFAULT_PATTERN = new URLPattern({ pathname: "/v1/prompts/:id/default" });
 const ADMIN_SYNC_DEFAULTS_PATTERN = new URLPattern({ pathname: "/admin/prompts/defaults/sync" });
 const HEALTHZ_PATTERN = new URLPattern({ pathname: "/healthz" });
+const READYZ_PATTERN = new URLPattern({ pathname: "/readyz" });
 const IMAGE_UPLOAD_PATTERN = new URLPattern({ pathname: "/v1/images/upload" });
 
 /**
@@ -52,6 +57,22 @@ async function handler(req: Request): Promise<Response> {
       return corsResponse(req);
     }
 
+    // Auth middleware - validates JWT/legacy tokens and checks permissions
+    const authResult = await authMiddleware(req, req.method, url.pathname);
+    if (!authResult.ok) {
+      logRequest(req, authResult.error.status, Date.now() - startTime, {
+        request_id: requestId,
+        auth_error: authResult.error.code,
+      });
+      return errorResponse(req, {
+        code: authResult.error.code,
+        message: authResult.error.message,
+        status: authResult.error.status,
+        requestId,
+      });
+    }
+    const authContext = authResult.context;
+
     const visionAnalyzeMatch = VISION_ANALYZE_PATTERN.exec(url);
     if (visionAnalyzeMatch && req.method === "POST") {
       return await handleVisionAnalyze(req, requestId, startTime, false);
@@ -67,6 +88,11 @@ async function handler(req: Request): Promise<Response> {
       const response = jsonResponse(req, { ok: true, ts: Date.now() });
       logRequest(req, 200, Date.now() - startTime, { request_id: requestId });
       return response;
+    }
+
+    const readyzMatch = READYZ_PATTERN.exec(url);
+    if (readyzMatch && req.method === "GET") {
+      return await handleReadyz(req, requestId, startTime);
     }
 
     const imageUploadMatch = IMAGE_UPLOAD_PATTERN.exec(url);
@@ -133,28 +159,38 @@ async function handler(req: Request): Promise<Response> {
   }
 }
 
-/**
- * Checks for the admin token on a request.
- */
-function checkAdminToken(req: Request): Response | null {
-    const adminToken = Deno.env.get("ADMIN_TOKEN");
-    if (!adminToken) {
-        // If token is not configured, deny all admin actions.
-        return errorResponse(req, { code: "CONFIG_ERROR", message: "Admin token not configured", status: 500 });
-    }
-    if (req.headers.get("X-Admin-Token") !== adminToken) {
-        return errorResponse(req, { code: "UNAUTHORIZED", message: "Invalid or missing admin token", status: 401 });
-    }
-    return null; // Token is valid
-}
-
-
 // --- Route Handlers ---
 
-async function handleCreatePrompt(req: Request, requestId: string): Promise<Response> {
-    const authError = checkAdminToken(req);
-    if (authError) return authError;
+/**
+ * Readiness check - verifies KV is accessible.
+ */
+async function handleReadyz(req: Request, requestId: string, startTime: number): Promise<Response> {
+  try {
+    // Simple KV health check - try to access KV
+    const kv = await Deno.openKv();
+    const testKey = ["_health", "readyz"];
+    await kv.get(testKey);
 
+    const response = jsonResponse(req, {
+      ok: true,
+      kv: true,
+      ts: Date.now(),
+    });
+    logRequest(req, 200, Date.now() - startTime, { request_id: requestId });
+    return response;
+  } catch (error) {
+    logError({ request_id: requestId, route: "/readyz", error: String(error) });
+    return jsonResponse(req, {
+      ok: false,
+      kv: false,
+      error: "KV unavailable",
+      ts: Date.now(),
+    }, 503);
+  }
+}
+
+async function handleCreatePrompt(req: Request, requestId: string): Promise<Response> {
+    // Auth already checked by middleware
     try {
         const data = await req.json() as PromptCreate;
         // Basic validation can be added here later
@@ -219,9 +255,7 @@ async function handleGetPrompt(req: Request, id: string, requestId: string): Pro
 }
 
 async function handleUpdatePrompt(req: Request, id: string, requestId: string): Promise<Response> {
-    const authError = checkAdminToken(req);
-    if (authError) return authError;
-
+    // Auth already checked by middleware
     try {
         const data = await req.json() as PromptUpdate;
         const updatedPrompt = await updatePrompt(id, data);
@@ -243,9 +277,7 @@ async function handleUpdatePrompt(req: Request, id: string, requestId: string): 
 }
 
 async function handleDeletePrompt(req: Request, id: string, requestId: string): Promise<Response> {
-    const authError = checkAdminToken(req);
-    if (authError) return authError;
-
+    // Auth already checked by middleware
     try {
         const success = await deletePrompt(id);
 
@@ -502,8 +534,7 @@ async function handleGetDefaultPrompt(req: Request, requestId: string): Promise<
 }
 
 async function handleSetDefaultPrompt(req: Request, id: string, requestId: string): Promise<Response> {
-  const authError = checkAdminToken(req);
-  if (authError) return authError;
+  // Auth already checked by middleware
   try {
     const url = new URL(req.url);
     let namespace = url.searchParams.get("namespace") || undefined;
@@ -536,8 +567,7 @@ async function handleSetDefaultPrompt(req: Request, id: string, requestId: strin
 }
 
 async function handleSyncDefaults(req: Request, requestId: string): Promise<Response> {
-  const authError = checkAdminToken(req);
-  if (authError) return authError;
+  // Auth already checked by middleware
   try {
     const url = new URL(req.url);
     const namespace = url.searchParams.get("namespace") || undefined;

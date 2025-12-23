@@ -171,7 +171,14 @@ curl -X POST http://localhost:8000/v1/prompts \
 
 - `OPENROUTER_API_KEY` - ключ OpenRouter (провайдер по умолчанию).
 - `DEFAULT_MODEL` - модель по умолчанию (например, `glm-4.6v-flash`).
-- `ADMIN_TOKEN` - токен для админ-операций (Prompts write + админ-эндпоинты).
+- `ADMIN_TOKEN` - токен для админ-операций (legacy, см. Auth0).
+
+Auth0 (Resource Server):
+
+- `AUTH0_ISSUER_BASE_URL` - URL Auth0 tenant (например, `https://tenant.auth0.com/`).
+- `AUTH0_AUDIENCE` - API Identifier из Auth0 Dashboard.
+- `AUTH_REQUIRED` - `1` для включения auth (по умолчанию), `0` для dev-режима.
+- `ALLOW_LEGACY_TOKENS` - `1` для поддержки X-Admin-Token (переходный период).
 
 Опциональные:
 
@@ -179,10 +186,55 @@ curl -X POST http://localhost:8000/v1/prompts \
 - `BIGMODEL_API_KEY` - ключ BigModel (если используется).
 - `APP_URL`, `APP_TITLE` — метаданные приложения.
 - `ALLOWED_ORIGINS` — CORS origins через запятую.
-- Безопасность (включение/настройка по необходимости):  
+- Безопасность (включение/настройка по необходимости):
   `WRITE_RL_LIMIT`, `WRITE_RL_WINDOW_SEC`, `ENABLE_NONCE`, `NONCE_TTL_SEC`
-- Supabase для бэкапов (опционально):  
+- Supabase для бэкапов (опционально):
   `SUPABASE_URL`, `SUPABASE_SERVICE_KEY`
+
+## Authentication
+
+API защищён JWT-авторизацией через Auth0. Токен передаётся в заголовке `Authorization: Bearer <token>`.
+
+### Permissions (RBAC)
+
+| Endpoint | Method | Permission | Описание |
+|----------|--------|------------|----------|
+| `/healthz`, `/readyz` | GET | — | Публичные |
+| `/v1/vision/analyze` | POST | `read:vision` | Анализ изображения |
+| `/v1/vision/stream` | POST | — | SSE-стрим (временно открыт) |
+| `/v1/images/upload` | POST | `write:images` | Загрузка в R2 |
+| `/v1/prompts`, `/v1/prompts/:id`, `/v1/prompts/default` | GET | `read:prompts` | Чтение промптов |
+| `/v1/prompts` | POST | `write:prompts` | Создание промпта |
+| `/v1/prompts/:id` | PUT, DELETE | `write:prompts` | Обновление/удаление |
+| `/v1/prompts/:id/default` | PUT | `write:prompts` | Установка default |
+| `/admin/prompts/defaults/sync` | POST | `write:prompts` | Синхронизация defaults |
+
+### Auth0 Setup
+
+1. Создайте API в Auth0 Dashboard → APIs
+2. Скопируйте Identifier как `AUTH0_AUDIENCE`
+3. Включите RBAC: Settings → Enable RBAC ✅, Add Permissions in Access Token ✅
+4. Добавьте permissions: `read:vision`, `read:prompts`, `write:prompts`, `write:images`
+5. Создайте роли и назначьте permissions
+6. Назначьте роли пользователям
+
+### Legacy X-Admin-Token
+
+Для обратной совместимости при `ALLOW_LEGACY_TOKENS=1` эндпоинты `write:prompts` принимают заголовок `X-Admin-Token`. Планируется к удалению.
+
+### Примеры запросов
+
+```bash
+# С JWT токеном
+curl -X GET http://localhost:8000/v1/prompts \
+  -H "Authorization: Bearer eyJhbGc..."
+
+# С legacy токеном (если ALLOW_LEGACY_TOKENS=1)
+curl -X POST http://localhost:8000/v1/prompts \
+  -H "X-Admin-Token: your-admin-token" \
+  -H "Content-Type: application/json" \
+  -d '{"namespace": "default", "name": "test", "text": "..."}'
+```
 
 ## Локальная разработка
 
